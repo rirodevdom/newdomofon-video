@@ -5,7 +5,7 @@ const fs = require('fs');
 const { URL } = require('url');
 const { Pool } = require('pg');
 
-const VERSION = 'v124-sdk-events-api';
+const VERSION = 'v125-public-events-timeline-filter';
 const PORT = Number(process.env.PUBLIC_EVENTS_PORT || 3057);
 const DATABASE_URL = process.env.DATABASE_URL || '';
 const RESTREAM_PUBLIC_TOKEN = process.env.RESTREAM_PUBLIC_TOKEN || process.env.VITE_RESTREAM_PUBLIC_TOKEN || '';
@@ -14,11 +14,17 @@ const ACCEPTED_TOKENS_FILE = process.env.ACCEPTED_TOKENS_FILE || '/etc/newdomofo
 const REQUIRE_TOKEN = String(process.env.PUBLIC_EVENTS_REQUIRE_TOKEN || 'auto').toLowerCase();
 const DEFAULT_LIMIT = Number(process.env.PUBLIC_EVENTS_DEFAULT_LIMIT || 20000);
 const MAX_LIMIT = Number(process.env.PUBLIC_EVENTS_MAX_LIMIT || 50000);
+const INCLUDE_PASSIVE_DEFAULT = flag(process.env.PUBLIC_EVENTS_INCLUDE_PASSIVE, false);
 
 const pool = DATABASE_URL ? new Pool({ connectionString: DATABASE_URL }) : null;
 
 let discovered = null;
 let discoveredAt = 0;
+
+function flag(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
 
 function readJson(file, fallback) {
   try {
@@ -146,6 +152,11 @@ function asBool(value) {
   return null;
 }
 
+function requestFlag(url, name, fallback) {
+  if (!url.searchParams.has(name)) return fallback;
+  return flag(url.searchParams.get(name), fallback);
+}
+
 function deepSearchState(node, depth = 0) {
   if (!node || depth > 8) return null;
 
@@ -194,6 +205,9 @@ function deepSearchState(node, depth = 0) {
 }
 
 function dataSimpleObject(data) {
+  if (data && typeof data.simple === 'object' && !Array.isArray(data.simple)) return data.simple;
+  if (data && typeof data.simpleItems === 'object' && !Array.isArray(data.simpleItems)) return data.simpleItems;
+
   const out = {};
 
   function add(name, value) {
@@ -216,6 +230,10 @@ function dataSimpleObject(data) {
 
     if (node.Name != null || node.name != null) {
       add(node.Name ?? node.name, node.Value ?? node.value);
+    }
+
+    if (node['@_Name'] != null || node['@_name'] != null) {
+      add(node['@_Name'] ?? node['@_name'], node['@_Value'] ?? node['@_value']);
     }
 
     for (const value of Object.values(node)) scan(value, depth + 1);
@@ -339,7 +357,7 @@ function rowToEvent(row, cameraId, streamName) {
   const eventType = row.event_type || row.type || row.topic || 'event';
   const title = row.title || eventType || 'event';
 
-  const item = {
+  return {
     id: row.id || row.event_hash || `${row.camera_id || cameraId || row.stream_name || streamName}-${occurred.toISOString()}`,
     camera_id: row.camera_id || cameraId || null,
     stream_name: row.stream_name || streamName || null,
@@ -359,15 +377,27 @@ function rowToEvent(row, cameraId, streamName) {
     simple,
     raw: data,
   };
-
-  return item;
 }
 
-async function listEvents(cameraId, streamName, start, end, limit) {
+function passiveSnapshotSql(meta) {
+  if (!meta.typeCol || !meta.stateCol) return null;
+
+  return `NOT (
+    lower(coalesce(${qident(meta.stateCol)}::text, '')) in ('false','0','no','off','inactive','clear','idle','none','end','ended')
+    AND lower(coalesce(${qident(meta.typeCol)}::text, '')) ~ '(logicalstate|ismotion|motion|relay|digitalinput|trigger)'
+  )`;
+}
+
+async function scalarCount(sql, values) {
+  const result = await pool.query(sql, values);
+  return Number(result.rows[0]?.count || 0);
+}
+
+async function listEvents(cameraId, streamName, start, end, limit, options = {}) {
   const meta = await discoverEventsTable();
 
   if (!meta || !meta.table) {
-    return { meta, items: [] };
+    return { meta, items: [], rawCount: 0, visibleCount: 0 };
   }
 
   const values = [start.toISOString(), end.toISOString()];
@@ -387,10 +417,24 @@ async function listEvents(cameraId, streamName, start, end, limit) {
   }
 
   if (!identityParts.length) {
-    return { meta, items: [] };
+    return { meta, items: [], rawCount: 0, visibleCount: 0 };
   }
 
   where.push(`(${identityParts.join(' OR ')})`);
+
+  const rawWhere = [...where];
+  const visibleWhere = [...where];
+  const activeSql = !options.includePassive ? passiveSnapshotSql(meta) : null;
+  if (activeSql) visibleWhere.push(activeSql);
+
+  const rawCount = await scalarCount(
+    `select count(*)::int as count from ${qident(meta.schema)}.${qident(meta.table)} where ${rawWhere.join(' AND ')}`,
+    values
+  );
+  const visibleCount = activeSql ? await scalarCount(
+    `select count(*)::int as count from ${qident(meta.schema)}.${qident(meta.table)} where ${visibleWhere.join(' AND ')}`,
+    values
+  ) : rawCount;
 
   values.push(limit);
   const limitParam = `$${values.length}`;
@@ -411,7 +455,7 @@ async function listEvents(cameraId, streamName, start, end, limit) {
   const sql = `
     select ${cols.join(', ')}
     from ${qident(meta.schema)}.${qident(meta.table)}
-    where ${where.join(' AND ')}
+    where ${visibleWhere.join(' AND ')}
     order by ${qident(meta.timeCol)} asc
     limit ${limitParam}
   `;
@@ -421,7 +465,7 @@ async function listEvents(cameraId, streamName, start, end, limit) {
     .filter((row) => Number.isFinite(new Date(row.occurred_at).getTime()))
     .map((row) => rowToEvent(row, cameraId, streamName));
 
-  return { meta, items };
+  return { meta, items, rawCount, visibleCount };
 }
 
 function tokenFromRequest(url, req) {
@@ -450,7 +494,8 @@ function resolveRequestIdentity(url, pathCameraId) {
     '';
 
   const map = cameraMap();
-  const streamName = String(queryStream || map[cameraId] || cameraId || '').trim();
+  const normalizedQueryStream = queryStream && map[queryStream] ? map[queryStream] : queryStream;
+  const streamName = String(normalizedQueryStream || map[cameraId] || cameraId || '').trim();
 
   return { cameraId, streamName, map };
 }
@@ -475,6 +520,7 @@ async function handle(req, res) {
         require_token: tokenRequired(tokens),
         camera_map: CAMERA_STREAM_MAP_FILE,
         accepted_tokens_file: ACCEPTED_TOKENS_FILE,
+        include_passive_default: INCLUDE_PASSIVE_DEFAULT,
         discovered: discovered || null,
       });
     }
@@ -504,7 +550,8 @@ async function handle(req, res) {
 
     const { start, end } = clampWindow(url.searchParams.get('start'), url.searchParams.get('end'));
     const limit = parseLimit(url.searchParams.get('limit'));
-    const { meta, items } = await listEvents(cameraId, streamName, start, end, limit);
+    const includePassive = requestFlag(url, 'include_passive', INCLUDE_PASSIVE_DEFAULT);
+    const { meta, items, rawCount, visibleCount } = await listEvents(cameraId, streamName, start, end, limit, { includePassive });
 
     return sendJson(res, 200, {
       ok: true,
@@ -515,12 +562,15 @@ async function handle(req, res) {
       end: end.toISOString(),
       limit,
       count: items.length,
+      raw_count: rawCount,
+      filtered_count: Math.max(0, rawCount - visibleCount),
+      include_passive: includePassive,
       meta,
       items,
       events: items,
     });
   } catch (error) {
-    console.error('[public-events-v124]', error);
+    console.error('[public-events-v125]', error);
     return sendJson(res, 500, {
       ok: false,
       error: error.message || String(error),
@@ -532,5 +582,5 @@ async function handle(req, res) {
 const server = http.createServer(handle);
 
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`[public-events-v124] listening on 127.0.0.1:${PORT}`);
+  console.log(`[public-events-v125] listening on 127.0.0.1:${PORT}`);
 });

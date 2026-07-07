@@ -166,6 +166,20 @@ function syncArchiveSourceWithCamera() {
   }
 }
 
+function normalizeTimelineEventState(raw: unknown): boolean | null {
+  if (typeof raw === 'boolean') return raw;
+  if (typeof raw === 'number') {
+    if (raw === 1) return true;
+    if (raw === 0) return false;
+    return null;
+  }
+
+  const value = String(raw ?? '').trim().toLowerCase();
+  if (['true', '1', 'yes', 'on', 'active', 'motion', 'detected', 'start', 'started'].includes(value)) return true;
+  if (['false', '0', 'no', 'off', 'inactive', 'clear', 'idle', 'none', 'end', 'ended'].includes(value)) return false;
+  return null;
+}
+
 function normalizePlayerKitSdk(candidate: any) {
   if (!candidate) return null;
   if (typeof candidate.create === 'function') return candidate;
@@ -388,15 +402,16 @@ async function createPlayer() {
                 params: { start: new Date(fromMs).toISOString(), end: new Date(toMs).toISOString() }
               });
               return (events.data.items || []).map((event: any) => {
-                const occurredAtMs = new Date(event.occurred_at).getTime();
+                const occurredAtMs = new Date(event.occurred_at || event.occurredAt || event.time || event.timestamp).getTime();
+                const state = normalizeTimelineEventState(event.IsMotion ?? event.is_motion ?? event.state ?? event.event_state ?? event.motion_state);
                 return {
                   id: event.id,
                   occurredAtMs,
                   timeMs: occurredAtMs,
-                  type: event.event_type,
-                  title: event.event_type,
-                  state: event.event_state,
-                  data: event.data,
+                  type: event.event_type || event.type || event.topic || 'event',
+                  title: event.title || event.event_type || event.type || 'Событие',
+                  state,
+                  data: event.data || event.raw || event,
                   raw: event
                 };
               }).filter((event: any) => Number.isFinite(event.occurredAtMs));

@@ -30,7 +30,7 @@ function base64url(input: Buffer | string): string {
   return Buffer.from(input).toString('base64url');
 }
 
-function signPayload(secret: string, payload: Record<string, unknown>): string {
+function signPayload(secret: string, payload: object): string {
   const body = base64url(JSON.stringify(payload));
   const sig = crypto.createHmac('sha256', secret).update(body).digest('base64url');
   return `${body}.${sig}`;

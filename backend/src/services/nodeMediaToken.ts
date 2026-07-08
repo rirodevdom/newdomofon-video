@@ -14,7 +14,7 @@ function permanentMediaLinkVersion(): string | null {
   return value || null;
 }
 
-export type NodeMediaScope = 'live' | 'archive' | 'export' | 'file' | 'status';
+export type NodeMediaScope = 'camera' | 'live' | 'archive' | 'export' | 'file' | 'status';
 
 export interface NodeMediaTokenPayload {
   stream_name: string;

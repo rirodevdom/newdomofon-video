@@ -6,7 +6,7 @@ WEB_ROOT="${WEB_ROOT:-/var/www/newdomofon-video}"
 SERVICE="${SERVICE:-newdomofon-video-backend.service}"
 SOURCE_REF="${SOURCE_REF:-main}"
 SOURCE_BASE="${SOURCE_BASE:-https://raw.githubusercontent.com/rirodevdom/newdomofon-video/${SOURCE_REF}}"
-BUNDLE_B64_SHA256="5d52d8ffa04fd3768c175d72ef6f974b27a4fc6e3262d88389e5c4170260a32e"
+BUNDLE_BLOB_SHA="bf5b31f6eb3a5cc2dfb9912461b9f77207950fe4"
 BUNDLE_SHA256="c423c3903508b00d78bc396b52541823021c3f99d82543d6ec9d230cf1272a70"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP="/opt/newdomofon-video-migration-backups/onvif-v200-master-${STAMP}"
@@ -44,7 +44,7 @@ trap rollback ERR
 trap cleanup EXIT
 
 [[ $(id -u) -eq 0 ]] || { echo 'Run as root' >&2; exit 1; }
-for cmd in curl sha256sum base64 tar rsync npm systemctl nginx; do command -v "$cmd" >/dev/null || { echo "Missing command: $cmd" >&2; exit 1; }; done
+for cmd in curl git sha256sum base64 tar rsync npm systemctl nginx; do command -v "$cmd" >/dev/null || { echo "Missing command: $cmd" >&2; exit 1; }; done
 [[ -d "$PROJECT_DIR/backend" && -d "$PROJECT_DIR/frontend" ]] || { echo "Invalid master project: $PROJECT_DIR" >&2; exit 1; }
 
 install -d -m 0700 "$BACKUP/project/backend/src/routes" "$BACKUP/project/backend/src" "$BACKUP/project/frontend/src/views" "$BACKUP/web"
@@ -60,9 +60,14 @@ cp -a "$PROJECT_DIR/frontend/src/views/AdminView.vue" "$BACKUP/project/frontend/
 [[ ! -d "$WEB_ROOT" ]] || rsync -a "$WEB_ROOT/" "$BACKUP/web/"
 
 curl -fsSL "$SOURCE_BASE/patches/onvif-v200/onvif-v200-bundle.tar.gz.b64" -o "$TMP/bundle.b64"
-echo "$BUNDLE_B64_SHA256  $TMP/bundle.b64" | sha256sum -c -
+ACTUAL_BLOB_SHA="$(git hash-object "$TMP/bundle.b64")"
+if [[ "$ACTUAL_BLOB_SHA" != "$BUNDLE_BLOB_SHA" ]]; then
+  echo "Bundle Git blob mismatch: expected=$BUNDLE_BLOB_SHA actual=$ACTUAL_BLOB_SHA" >&2
+  exit 1
+fi
 base64 -d "$TMP/bundle.b64" > "$TMP/bundle.tar.gz"
 echo "$BUNDLE_SHA256  $TMP/bundle.tar.gz" | sha256sum -c -
+tar -tzf "$TMP/bundle.tar.gz" >/dev/null
 tar -xzf "$TMP/bundle.tar.gz" -C "$TMP"
 
 install -m 0644 "$TMP/master/backend/src/routes/nodeAgent.ts" "$PROJECT_DIR/backend/src/routes/nodeAgent.ts"

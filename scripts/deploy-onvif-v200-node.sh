@@ -18,9 +18,10 @@ rollback() {
   trap - ERR
   set +e
   echo "ERROR: node v200 deployment failed (exit=$rc), rolling back" >&2
-  if [[ -d "$BACKUP/project" ]]; then
-    rsync -a --delete "$BACKUP/project/" "$PROJECT_DIR/"
-  fi
+  for file in onvifEventsV2.ts onvifEventsLegacyFallback.ts nodeClient.ts; do
+    [[ ! -f "$BACKUP/project/dvr-engine/src/$file" ]] || cp -a "$BACKUP/project/dvr-engine/src/$file" "$PROJECT_DIR/dvr-engine/src/$file"
+  done
+  [[ ! -d "$BACKUP/project/dvr-engine/dist" ]] || rsync -a --delete "$BACKUP/project/dvr-engine/dist/" "$PROJECT_DIR/dvr-engine/dist/"
   if [[ "$SWITCHED" == 1 ]]; then systemctl restart "$SERVICE" || true; fi
   cleanup
   echo "Rollback data: $BACKUP" >&2

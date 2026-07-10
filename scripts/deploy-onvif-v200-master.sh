@@ -19,9 +19,16 @@ rollback() {
   trap - ERR
   set +e
   echo "ERROR: master v200 deployment failed (exit=$rc), rolling back" >&2
-  if [[ -d "$BACKUP/project" ]]; then
-    rsync -a --delete "$BACKUP/project/" "$PROJECT_DIR/"
+  [[ ! -f "$BACKUP/project/backend/src/routes/nodeAgent.ts" ]] || cp -a "$BACKUP/project/backend/src/routes/nodeAgent.ts" "$PROJECT_DIR/backend/src/routes/nodeAgent.ts"
+  if [[ -f "$BACKUP/smartyardLinks.existed" ]]; then
+    cp -a "$BACKUP/project/backend/src/routes/smartyardLinks.ts" "$PROJECT_DIR/backend/src/routes/smartyardLinks.ts"
+  else
+    rm -f "$PROJECT_DIR/backend/src/routes/smartyardLinks.ts"
   fi
+  [[ ! -f "$BACKUP/project/backend/src/index.ts" ]] || cp -a "$BACKUP/project/backend/src/index.ts" "$PROJECT_DIR/backend/src/index.ts"
+  [[ ! -f "$BACKUP/project/frontend/src/views/AdminView.vue" ]] || cp -a "$BACKUP/project/frontend/src/views/AdminView.vue" "$PROJECT_DIR/frontend/src/views/AdminView.vue"
+  [[ ! -d "$BACKUP/project/backend/dist" ]] || rsync -a --delete "$BACKUP/project/backend/dist/" "$PROJECT_DIR/backend/dist/"
+  [[ ! -d "$BACKUP/project/frontend/dist" ]] || rsync -a --delete "$BACKUP/project/frontend/dist/" "$PROJECT_DIR/frontend/dist/"
   if [[ -d "$BACKUP/web" ]]; then
     rsync -a --delete "$BACKUP/web/" "$WEB_ROOT/"
   fi
@@ -42,7 +49,10 @@ for cmd in curl sha256sum base64 tar rsync npm systemctl nginx; do command -v "$
 
 install -d -m 0700 "$BACKUP/project/backend/src/routes" "$BACKUP/project/backend/src" "$BACKUP/project/frontend/src/views" "$BACKUP/web"
 cp -a "$PROJECT_DIR/backend/src/routes/nodeAgent.ts" "$BACKUP/project/backend/src/routes/"
-[[ ! -f "$PROJECT_DIR/backend/src/routes/smartyardLinks.ts" ]] || cp -a "$PROJECT_DIR/backend/src/routes/smartyardLinks.ts" "$BACKUP/project/backend/src/routes/"
+if [[ -f "$PROJECT_DIR/backend/src/routes/smartyardLinks.ts" ]]; then
+  touch "$BACKUP/smartyardLinks.existed"
+  cp -a "$PROJECT_DIR/backend/src/routes/smartyardLinks.ts" "$BACKUP/project/backend/src/routes/"
+fi
 cp -a "$PROJECT_DIR/backend/src/index.ts" "$BACKUP/project/backend/src/"
 cp -a "$PROJECT_DIR/frontend/src/views/AdminView.vue" "$BACKUP/project/frontend/src/views/"
 [[ ! -d "$PROJECT_DIR/backend/dist" ]] || cp -a "$PROJECT_DIR/backend/dist" "$BACKUP/project/backend/"

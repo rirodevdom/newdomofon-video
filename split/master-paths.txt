@@ -1,0 +1,11 @@
+backend
+frontend
+public-events-proxy
+media-public-proxy
+smartyard-compat-proxy
+archive-policy-api
+deploy
+scripts
+docs
+contracts
+.gitignore

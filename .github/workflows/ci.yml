@@ -1,0 +1,39 @@
+name: NewDomofon Video CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Validate installer
+        run: bash -n update-installed-project.sh
+
+      - name: Build backend
+        working-directory: backend
+        run: |
+          npm ci --include=dev
+          npm run build
+
+      - name: Build frontend and apply source patches
+        working-directory: frontend
+        run: |
+          npm ci --include=dev
+          npm run build
